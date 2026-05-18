@@ -76,7 +76,7 @@ Evaluations on hybrid MoE models (HellaSwag, Winogrande, MMLU, ARC-Challenge, Tr
 
 ```bash
 # Clone the repo
-git clone https://github.com/mudler/apex-quant.git
+git clone https://github.com/innokria/apex-quant.git
 cd apex-quant
 
 # Quantize a model (requires an F16 GGUF and llama.cpp built)
