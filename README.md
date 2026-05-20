@@ -1,4 +1,7 @@
 # APEX -- Adaptive Precision for EXpert Models
+## RUN App.py to launch UI and Start Quantizing models
+
+
 
 **Brought to you by the [LocalAI](https://github.com/mudler/LocalAI) team** -- the creators of LocalAI the open-source AI engine that runs any model - LLMs, vision, voice, image, video - on any hardware. No GPU required.
 
