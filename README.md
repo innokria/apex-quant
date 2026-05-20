@@ -3,7 +3,7 @@
 
 
 
-**Brought to you by the [LocalAI](https://github.com/mudler/LocalAI) team** -- the creators of LocalAI the open-source AI engine that runs any model - LLMs, vision, voice, image, video - on any hardware. No GPU required.
+
 
 [![Paper](https://img.shields.io/badge/Technical_Report-PDF-blue)](paper/APEX_Technical_Report.pdf)
 [![APEX Models collection](https://img.shields.io/badge/HuggingFace-Models-yellow)](https://huggingface.co/collections/mudler/apex-quants)
