@@ -1,0 +1,8 @@
+torch
+sentencepiece
+safetensors
+gradio
+streamlit
+huggingface_hub
+torchvision
+transformers>=4.53.0
