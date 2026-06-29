@@ -29,6 +29,7 @@ set -euo pipefail
 PROFILE=""
 LAYERS=40
 OUTPUT=""
+DENSE_LAYERS=0                    # leading dense (non-MoE) FFN layers, e.g. LFM2-MoE
 # Custom mode overrides
 EDGE_EXP="" NEAR_EXP="" MID_EXP=""
 EDGE_SHARED="" MID_SHARED=""
@@ -43,6 +44,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --profile|-p)      PROFILE="$2"; shift 2 ;;
         --layers|-l)       LAYERS="$2"; shift 2 ;;
+        --dense-layers)    DENSE_LAYERS="$2"; shift 2 ;;
         --output|-o)       OUTPUT="$2"; shift 2 ;;
         --custom)          PROFILE="custom"; shift ;;
         --edge-exp)        EDGE_EXP="$2"; shift 2 ;;
@@ -168,17 +170,25 @@ generate() {
             attn_type="$MID_ATTN"
         fi
 
-        # Expert tensors
-        echo "blk.${i}.ffn_gate_exps=${exp_type}"
-        echo "blk.${i}.ffn_up_exps=${exp_type}"
-        echo "blk.${i}.ffn_down_exps=${exp_type}"
+        if (( i < DENSE_LAYERS )); then
+            # Leading dense (non-MoE) FFN layers — keep at shared (edge) precision.
+            # ".weight" suffix prevents the regex from also matching ffn_*_exps/ffn_gate_inp.
+            echo "blk.${i}.ffn_gate.weight=${shared_type}"
+            echo "blk.${i}.ffn_up.weight=${shared_type}"
+            echo "blk.${i}.ffn_down.weight=${shared_type}"
+        else
+            # Routed expert tensors (dominant cost in MoE)
+            echo "blk.${i}.ffn_gate_exps=${exp_type}"
+            echo "blk.${i}.ffn_up_exps=${exp_type}"
+            echo "blk.${i}.ffn_down_exps=${exp_type}"
+        fi
 
-        # Shared expert tensors
+        # Shared expert tensors (archs with shared experts, e.g. Qwen3-MoE)
         echo "blk.${i}.ffn_gate_shexp=${shared_type}"
         echo "blk.${i}.ffn_up_shexp=${shared_type}"
         echo "blk.${i}.ffn_down_shexp=${shared_type}"
 
-        # Attention tensors
+        # Attention tensors (attention layers)
         echo "blk.${i}.attn_q=${attn_type}"
         echo "blk.${i}.attn_k=${attn_type}"
         echo "blk.${i}.attn_v=${attn_type}"
@@ -186,7 +196,11 @@ generate() {
         echo "blk.${i}.attn_gate=${attn_type}"
         echo "blk.${i}.attn_qkv=${attn_type}"
 
-        # SSM tensors
+        # Short-convolution mixing tensors (LFM2 conv layers — attention-equivalent)
+        echo "blk.${i}.shortconv.in_proj=${attn_type}"
+        echo "blk.${i}.shortconv.out_proj=${attn_type}"
+
+        # SSM tensors (Mamba/hybrid archs)
         echo "blk.${i}.ssm_alpha=${attn_type}"
         echo "blk.${i}.ssm_beta=${attn_type}"
         echo "blk.${i}.ssm_out=${attn_type}"

@@ -100,6 +100,8 @@ parse_yaml_list() {
 MODEL_NAME=$(parse_yaml "$CONFIG_FILE" "name")
 MODEL_ID=$(parse_yaml "$CONFIG_FILE" "model_id")
 LAYERS=$(parse_yaml "$CONFIG_FILE" "layers")
+DENSE_LAYERS=$(parse_yaml "$CONFIG_FILE" "dense_layers")
+[ -z "$DENSE_LAYERS" ] && DENSE_LAYERS=0
 HF_REPO=$(parse_yaml "$CONFIG_FILE" "hf_repo")
 SOURCE_FORMAT=$(parse_yaml "$CONFIG_FILE" "source_format")
 SOURCE_GGUF=$(parse_yaml "$CONFIG_FILE" "source_gguf")
@@ -487,12 +489,14 @@ if should_run config; then
     log "Phase 1: Generating configs (${LAYERS} layers, ${#PROFILES[@]} profiles)"
     for profile in "${PROFILES[@]}"; do
         "$SCRIPT_DIR/generate_config.sh" --profile "$profile" --layers "$LAYERS" \
+            --dense-layers "$DENSE_LAYERS" \
             -o "${CONFIGS_DIR}/${CONFIG_PREFIX}_${profile}.txt"
         info "  Generated: ${CONFIG_PREFIX}_${profile}.txt"
     done
     # Also generate mini/nano/micro configs (used by ivariants phase only)
     for extra in mini nano micro; do
         "$SCRIPT_DIR/generate_config.sh" --profile "$extra" --layers "$LAYERS" \
+            --dense-layers "$DENSE_LAYERS" \
             -o "${CONFIGS_DIR}/${CONFIG_PREFIX}_${extra}.txt"
         info "  Generated: ${CONFIG_PREFIX}_${extra}.txt (for I-${extra^})"
     done
