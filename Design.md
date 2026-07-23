@@ -57,6 +57,34 @@ FP16
 # 3. System Architecture
 
 ```
+             Input Sources
+
+        +------------------+
+        |                  |
+        v                  v
+
+ HF Transformers       Existing GGUF
+      |                    |
+      v                    |
+    F16 GGUF               |
+      |                    |
+      +---------+----------+
+                |
+                v
+        APEX Quant Engine
+
+                |
+                v
+
+        Q6/Q5/Q4/IQ GGUF
+
+                |
+                v
+
+          llama.cpp
+```
+
+```
                  Hugging Face Model
 
                         |
