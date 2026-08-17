@@ -22,6 +22,25 @@ APEX assigns quantization precision per tensor type and per layer, exploiting th
 
 APEX is a quantization strategy for Mixture-of-Experts (MoE) models that goes beyond uniform bit-width assignment. It classifies every tensor by its role -- routed expert, shared expert, or attention -- and then applies a layer-wise precision gradient, giving the most sensitive edge layers higher precision and compressing the redundant middle layers more aggressively. The result is a set of GGUF quantizations that match or beat full Q8_0 quality at a fraction of the size and with faster inference, all using stock llama.cpp with no code changes.
 
+## Dense models
+
+APEX was built for MoE, where routed experts are most of the weights but only a few fire per token. That does not transfer directly to dense models, where every weight runs for every token, so the allocation has to be measured rather than assumed.
+
+`scripts/generate_config.sh --arch dense` emits configs for dense and hybrid-attention models. `scripts/generate_sensitivity_configs.py` builds a perturbation sweep that measures how much KL divergence each tensor group costs per gigabyte saved, and `scripts/generate_opt_config.py` turns that curve into an allocation.
+
+Measured on Qwen3.8-27B (64 layers, dense FFN, 3 linear-attention layers per full-attention layer). Full write-up in [benchmark_results/qwen38_27b/SENSITIVITY.md](benchmark_results/qwen38_27b/SENSITIVITY.md).
+
+| band | size | KL vs BF16 | flat allocation, same size | difference |
+|---|---|---|---|---|
+| Balanced | 17.65 GB | 0.011211 | 0.009832 | 14.0% worse |
+| Compact | 15.17 GB | 0.030468 | 0.030705 | tie |
+| Mini | 13.49 GB | 0.049020 | 0.065369 | 25.0% better |
+| Nano | 10.79 GB | 0.121640 | 0.156226 | 22.1% better |
+
+A measured allocation only beats a flat per-role one below roughly 15.2 GB. Above that the model is close enough to lossless that there is nothing worth redistributing, and the published quants stop at two sizes for that reason.
+
+The sensitivity curve itself is the more portable result. On this model it spans 15.3x from cheapest to dearest tensor group, `output` is 15.3x more sensitive than `token_embd` despite identical shape, and FFN edge layers cost 2.63x more per byte than middle layers. Those ratios are architecture-specific, so porting the approach means re-running the sweep rather than reusing the numbers.
+
 ## Results
 
 All measurements on Qwen3.5-35B-A3B, NVIDIA DGX Spark (GB10, 122 GB VRAM). Perplexity measured on wikitext-2-raw, context 2048. Accuracy benchmarks (HellaSwag, Winogrande, MMLU, ARC-Challenge, TruthfulQA) evaluated via llama.cpp using 400 tasks where applicable.

@@ -1,0 +1,18 @@
+{
+  "model": "Qwen/Qwen3.8-27B",
+  "host": "thor",
+  "eval": "wikitext-2-raw",
+  "chunks": 200,
+  "imatrix": "calibration_v1.3",
+  "kl_base": "BF16 reference-logits",
+  "name": "apex_dense_grad",
+  "size_gb": 17.55,
+  "ppl": 6.8117,
+  "ppl_err": 0.07423,
+  "kl_mean": 0.009926,
+  "kl_mean_err": 0.000166,
+  "kl_median": 0.004085,
+  "kl_99_9": 0.343309,
+  "kl_max": 5.1566,
+  "note": "control + FFN layer-position gradient"
+}

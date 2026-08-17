@@ -1,0 +1,42 @@
+# Qwen3.8-27B — dense-FFN / hybrid-attention pilot for APEX-Dense.
+#
+# NOT a plain dense transformer: Qwen3_5ForConditionalGeneration, 64 layers with
+# layer_types interleaving 3x linear_attention + 1x full_attention
+# (full_attention_interval=4, so full attention at i%4==3), a vision tower, and a
+# real MTP/NextN head (mtp.layers.0.* weights are present, not just declared).
+#
+# Parameter budget (27.3 B LM params, excluding vision):
+#   FFN 62.6% | linear-attn 20.4% | full-attn 6.1% | embd+output 9.3% | MTP 1.6%
+#
+# This config drives the allocation experiment, not a publishable tier ladder —
+# the four profiles are three size-matched arms plus one higher-band check. See
+# SKILL.md "Dense / hybrid-attention models".
+name: Qwen3.8-27B
+model_id: Qwen/Qwen3.8-27B
+layers: 64
+arch: dense
+config_prefix: qwen38_27b
+hf_repo: mudler/Qwen3.8-27B-APEX-GGUF
+source_format: gguf
+tokenizer: Qwen/Qwen3.8-27B
+
+# ggml-org publishes BF16 and Q8_0 GGUF directly, so the safetensors download
+# (18 shards, 55.6 GB) and the convert step are both skipped entirely.
+# NOTE: their main GGUF is trunk-only (64 blocks); MTP bundling needs the fork
+# converter. Their mtp-*.gguf ships the head separately.
+source_gguf: ggml-org/Qwen3.8-27B-GGUF
+
+calibration: calibration/calibration_v1.3.txt
+
+# PPL + KL against the BF16 reference are what the experiment turns on; the
+# accuracy harness is not needed to compare allocations at matched size.
+eval_suite: native
+native_evals: ppl,kl,speed
+
+# The shelf quants the arms are judged against. dense-flat replicates unsloth's
+# allocation exactly, so UD-Q4_K_XL is both a baseline and a sanity check on the
+# size model (predicted 17.92 GB vs their actual 17.92 GB).
+baselines:
+  - unsloth/Qwen3.8-27B-GGUF:*UD-Q4_K_XL*:unsloth_ud_q4_k_xl
+  - bartowski/Qwen3.8-27B-GGUF:*Q4_K_M*:bartowski_q4_k_m
+  - ggml-org/Qwen3.8-27B-GGUF:*Q8_0*:ggml_q8_0

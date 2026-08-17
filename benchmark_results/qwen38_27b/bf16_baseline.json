@@ -1,0 +1,12 @@
+{
+  "model": "Qwen/Qwen3.8-27B",
+  "host": "thor",
+  "eval": "wikitext-2-raw",
+  "chunks": 200,
+  "imatrix": "calibration_v1.3",
+  "kl_base": "BF16 reference-logits",
+  "name": "bf16_baseline",
+  "size_gb": 53.81,
+  "ppl": 6.7858,
+  "ppl_err": 0.07388
+}
