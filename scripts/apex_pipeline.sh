@@ -102,6 +102,15 @@ MODEL_ID=$(parse_yaml "$CONFIG_FILE" "model_id")
 LAYERS=$(parse_yaml "$CONFIG_FILE" "layers")
 DENSE_LAYERS=$(parse_yaml "$CONFIG_FILE" "dense_layers")
 [ -z "$DENSE_LAYERS" ] && DENSE_LAYERS=0
+# arch: moe (default) | dense. "dense" means the model has no expert layers at
+# all, and is NOT the same thing as dense_layers (leading dense FFN layers
+# inside a MoE, e.g. LFM2 / Step-3.x / Laguna).
+ARCH=$(parse_yaml "$CONFIG_FILE" "arch")
+[ -z "$ARCH" ] && ARCH=moe
+if [ "$ARCH" = "dense" ] && [ "$DENSE_LAYERS" -ne 0 ]; then
+    echo "Error: arch: dense is incompatible with dense_layers: $DENSE_LAYERS" >&2
+    exit 1
+fi
 HF_REPO=$(parse_yaml "$CONFIG_FILE" "hf_repo")
 SOURCE_FORMAT=$(parse_yaml "$CONFIG_FILE" "source_format")
 SOURCE_GGUF=$(parse_yaml "$CONFIG_FILE" "source_gguf")
@@ -142,8 +151,35 @@ mapfile -t BASELINES < <(parse_yaml_list "$CONFIG_FILE" "baselines")
 
 # Profiles
 # Mini requires imatrix (uses iq2_s), so it only runs in Phase 7 (ivariants)
-PROFILES=(quality balanced compact)
-I_PROFILES=(i-quality i-balanced i-compact)
+if [ "$ARCH" = "dense" ]; then
+    # Allocation experiment, not a tier ladder. Every arm is quantized WITH the
+    # same imatrix — otherwise the comparison would confound allocation with
+    # imatrix presence — so they all run in Phase 7 and Phase 5 has nothing to do.
+    PROFILES=()
+    I_PROFILES=(dense-flat dense-grad dense-hybrid dense-hybrid-quality)
+    EXTRA_CONFIG_PROFILES=()
+    declare -A DENSE_BASE=( [dense-flat]=Q5_K [dense-grad]=Q5_K \
+                            [dense-hybrid]=Q5_K [dense-hybrid-quality]=Q6_K )
+else
+    PROFILES=(quality balanced compact)
+    I_PROFILES=(i-quality i-balanced i-compact)
+    EXTRA_CONFIG_PROFILES=(mini nano micro)
+fi
+
+# Title-case a profile name for output filenames: dense-hybrid -> Dense-Hybrid,
+# balanced -> Balanced. I-variants keep their "I-" prefix.
+profile_label() {
+    local p="$1" out="" part
+    IFS='-' read -ra parts <<< "$p"
+    for part in "${parts[@]}"; do
+        if [ "$part" = "i" ]; then
+            out+="I-"
+        else
+            out+="$(echo "${part:0:1}" | tr a-z A-Z)${part:1}-"
+        fi
+    done
+    echo "${out%-}"
+}
 
 # APEX_VARIANT env var (optional): infixed after "-APEX" in output filenames.
 # e.g. APEX_VARIANT=MTP → Foo-APEX-MTP-I-Balanced.gguf. Leave empty for default.
@@ -487,16 +523,26 @@ print('  Uploaded: $fname')
 # ═══════════════════════════════════════════════════════════════════════════════
 if should_run config; then
     log "Phase 1: Generating configs (${LAYERS} layers, ${#PROFILES[@]} profiles)"
-    for profile in "${PROFILES[@]}"; do
-        "$SCRIPT_DIR/generate_config.sh" --profile "$profile" --layers "$LAYERS" \
-            --dense-layers "$DENSE_LAYERS" \
-            -o "${CONFIGS_DIR}/${CONFIG_PREFIX}_${profile}.txt"
-        info "  Generated: ${CONFIG_PREFIX}_${profile}.txt"
+    gen_args=(--layers "$LAYERS")
+    if [ "$ARCH" = "dense" ]; then
+        gen_args+=(--arch dense)
+    else
+        gen_args+=(--dense-layers "$DENSE_LAYERS")
+    fi
+
+    # For arch=dense, PROFILES is empty and the arms live in I_PROFILES; their
+    # configs still need generating here.
+    for profile in "${PROFILES[@]}" "${I_PROFILES[@]}"; do
+        cfg_name="${profile#i-}"
+        [ -f "${CONFIGS_DIR}/${CONFIG_PREFIX}_${cfg_name//-/_}.txt" ] && [ "$ARCH" = "dense" ] && continue
+        "$SCRIPT_DIR/generate_config.sh" --profile "$cfg_name" "${gen_args[@]}" \
+            -o "${CONFIGS_DIR}/${CONFIG_PREFIX}_${cfg_name//-/_}.txt"
+        info "  Generated: ${CONFIG_PREFIX}_${cfg_name//-/_}.txt"
     done
-    # Also generate mini/nano/micro configs (used by ivariants phase only)
-    for extra in mini nano micro; do
-        "$SCRIPT_DIR/generate_config.sh" --profile "$extra" --layers "$LAYERS" \
-            --dense-layers "$DENSE_LAYERS" \
+    # mini/nano/micro are MoE-only tiers (they lean on expert sparsity), used by
+    # the ivariants phase.
+    for extra in "${EXTRA_CONFIG_PROFILES[@]}"; do
+        "$SCRIPT_DIR/generate_config.sh" --profile "$extra" "${gen_args[@]}" \
             -o "${CONFIGS_DIR}/${CONFIG_PREFIX}_${extra}.txt"
         info "  Generated: ${CONFIG_PREFIX}_${extra}.txt (for I-${extra^})"
     done
@@ -639,16 +685,25 @@ if should_run ivariants; then
 
     # SKIP_TIERS env var: comma-separated tier names to skip (e.g. "micro" or "nano,micro")
     # Matches both "micro" and "i-micro" forms.
-    for profile in "${I_PROFILES[@]}" i-mini i-nano i-micro; do
+    # mini/nano/micro lean on MoE expert sparsity — on a dense model every weight
+    # is on the critical path, so they are not appended for arch=dense.
+    ivariant_list=("${I_PROFILES[@]}")
+    [ "$ARCH" = "dense" ] || ivariant_list+=(i-mini i-nano i-micro)
+
+    for profile in "${ivariant_list[@]}"; do
         if [[ -n "${SKIP_TIERS:-}" ]] && [[ ",${SKIP_TIERS}," == *",${profile#i-},"* || ",${SKIP_TIERS}," == *",${profile},"* ]]; then
             info "Skipping ${profile} (SKIP_TIERS)"
             continue
         fi
         config_name="${profile#i-}"
-        cap="I-$(echo ${config_name:0:1} | tr a-z A-Z)${config_name:1}"
+        cap="$(profile_label "$profile")"
         outfile="${MODEL_DIR}/${MODEL_NAME}-APEX${APEX_VARIANT_SUFFIX}-${cap}.gguf"
-        config="${CONFIGS_DIR}/${CONFIG_PREFIX}_${config_name}.txt"
-        base="${I_BASE_TYPES[$profile]}"
+        config="${CONFIGS_DIR}/${CONFIG_PREFIX}_${config_name//-/_}.txt"
+        if [ "$ARCH" = "dense" ]; then
+            base="${DENSE_BASE[$profile]}"
+        else
+            base="${I_BASE_TYPES[$profile]}"
+        fi
 
         info "Quantizing APEX-${cap} (base: ${base} + imatrix)..."
         $QUANTIZE --tensor-type-file "$config" --imatrix "$IMAT" \

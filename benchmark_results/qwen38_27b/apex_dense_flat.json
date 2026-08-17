@@ -1,0 +1,18 @@
+{
+  "model": "Qwen/Qwen3.8-27B",
+  "host": "thor",
+  "eval": "wikitext-2-raw",
+  "chunks": 200,
+  "imatrix": "calibration_v1.3",
+  "kl_base": "BF16 reference-logits",
+  "name": "apex_dense_flat",
+  "size_gb": 17.64,
+  "ppl": 6.8114,
+  "ppl_err": 0.07429,
+  "kl_mean": 0.009877,
+  "kl_mean_err": 0.000152,
+  "kl_median": 0.00405,
+  "kl_99_9": 0.37664,
+  "kl_max": 3.172579,
+  "note": "control: flat per-role, no layer gradient (replicates unsloth UD allocation)"
+}

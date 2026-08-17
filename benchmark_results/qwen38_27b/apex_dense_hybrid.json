@@ -1,0 +1,18 @@
+{
+  "model": "Qwen/Qwen3.8-27B",
+  "host": "thor",
+  "eval": "wikitext-2-raw",
+  "chunks": 200,
+  "imatrix": "calibration_v1.3",
+  "kl_base": "BF16 reference-logits",
+  "name": "apex_dense_hybrid",
+  "size_gb": 17.48,
+  "ppl": 6.8097,
+  "ppl_err": 0.07412,
+  "kl_mean": 0.011772,
+  "kl_mean_err": 0.000193,
+  "kl_median": 0.004803,
+  "kl_99_9": 0.445441,
+  "kl_max": 5.856667,
+  "note": "grad + full-attn pinned Q8_0 / linear-attn cut to Q4_K"
+}

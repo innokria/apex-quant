@@ -1,0 +1,18 @@
+{
+  "model": "Qwen/Qwen3.8-27B",
+  "host": "thor",
+  "eval": "wikitext-2-raw",
+  "chunks": 200,
+  "imatrix": "calibration_v1.3",
+  "kl_base": "BF16 reference-logits",
+  "name": "apex_dense_hybrid_quality",
+  "size_gb": 19.78,
+  "ppl": 6.7904,
+  "ppl_err": 0.07379,
+  "kl_mean": 0.007762,
+  "kl_mean_err": 0.000149,
+  "kl_median": 0.003096,
+  "kl_99_9": 0.287034,
+  "kl_max": 4.140366,
+  "note": "same allocation in the Q5/Q6 band; NOT size-matched to the others"
+}

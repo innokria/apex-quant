@@ -23,6 +23,20 @@
 #   micro       Q3_K edge / IQ2_XS near / IQ1_M mid experts (1.75 bpw mid) — needs imatrix, experimental
 #   custom      Specify each type manually via flags
 #
+# Dense/hybrid profiles (--arch dense is implied; for models whose FFN is dense,
+# e.g. Qwen3.8-27B: 64 layers, 48 linear-attention + 16 full-attention):
+#   dense-flat            Control. Flat per-role allocation, NO layer gradient —
+#                         replicates what the shelf dynamic quants actually do.
+#   dense-grad            dense-flat + FFN layer-position gradient. Isolates that
+#                         one lever; attention is left identical to the control.
+#   dense-hybrid          dense-grad + full-attn pinned up / linear-attn cut.
+#                         Full-attn is only ~6% of params, linear-attn ~20%.
+#   dense-hybrid-quality  dense-hybrid rebuilt in the Q5/Q6 band, to check the
+#                         winning allocation still wins away from the Q4 band.
+#
+# The three Q4-band profiles are deliberately size-matched: an A/B between
+# allocations is only interpretable if the arms are the same size.
+#
 set -euo pipefail
 
 # Defaults
@@ -30,10 +44,18 @@ PROFILE=""
 LAYERS=40
 OUTPUT=""
 DENSE_LAYERS=0                    # leading dense (non-MoE) FFN layers, e.g. LFM2-MoE
+ARCH=moe                          # moe | dense — selects which emitter runs
 # Custom mode overrides
 EDGE_EXP="" NEAR_EXP="" MID_EXP=""
 EDGE_SHARED="" MID_SHARED=""
 EDGE_ATTN="" MID_ATTN=""
+# Dense/hybrid types
+FFN_EDGE_GATE="" FFN_NEAR_GATE="" FFN_MID_GATE=""
+FFN_EDGE_UP="" FFN_NEAR_UP="" FFN_MID_UP=""
+FFN_EDGE_DOWN="" FFN_NEAR_DOWN="" FFN_MID_DOWN=""
+LINATTN="" LINATTN_SMALL=""       # attn_qkv/attn_gate/ssm_out ; ssm_alpha/ssm_beta
+FULLATTN="" FULLATTN_V=""         # attn_q/attn_k/attn_output ; attn_v
+EMBD_TYPE="" OUTPUT_TYPE=""
 
 show_help() {
     sed -n '3,25p' "$0"
@@ -45,6 +67,11 @@ while [ $# -gt 0 ]; do
         --profile|-p)      PROFILE="$2"; shift 2 ;;
         --layers|-l)       LAYERS="$2"; shift 2 ;;
         --dense-layers)    DENSE_LAYERS="$2"; shift 2 ;;
+        --arch)            ARCH="$2"; shift 2 ;;
+        --linattn)         LINATTN="$2"; shift 2 ;;
+        --fullattn)        FULLATTN="$2"; shift 2 ;;
+        --embd)            EMBD_TYPE="$2"; shift 2 ;;
+        --output-type)     OUTPUT_TYPE="$2"; shift 2 ;;
         --output|-o)       OUTPUT="$2"; shift 2 ;;
         --custom)          PROFILE="custom"; shift ;;
         --edge-exp)        EDGE_EXP="$2"; shift 2 ;;
@@ -128,6 +155,44 @@ case "$PROFILE" in
         EDGE_ATTN="${EDGE_ATTN:-Q4_K}"
         MID_ATTN="${MID_ATTN:-Q3_K}"
         ;;
+    dense-flat|dense-grad|dense-hybrid|dense-hybrid-quality)
+        ARCH=dense
+        # Shared across the three Q4-band arms: attention/embedding allocation
+        # matching what the shelf quants do, so only the lever under test moves.
+        LINATTN="${LINATTN:-Q5_K}"       ; LINATTN_SMALL="${LINATTN_SMALL:-Q4_K}"
+        FULLATTN="${FULLATTN:-Q5_K}"     ; FULLATTN_V="${FULLATTN_V:-Q6_K}"
+        EMBD_TYPE="${EMBD_TYPE:-Q4_K}"   ; OUTPUT_TYPE="${OUTPUT_TYPE:-Q6_K}"
+
+        case "$PROFILE" in
+            dense-flat)
+                # Control: flat per-role, no layer gradient (what UD quants do).
+                FFN_EDGE_GATE=IQ4_XS ; FFN_NEAR_GATE=IQ4_XS ; FFN_MID_GATE=IQ4_XS
+                FFN_EDGE_UP=Q5_K     ; FFN_NEAR_UP=Q5_K     ; FFN_MID_UP=Q5_K
+                FFN_EDGE_DOWN=Q5_K   ; FFN_NEAR_DOWN=Q5_K   ; FFN_MID_DOWN=Q5_K
+                ;;
+            dense-grad|dense-hybrid)
+                # Edge layers up, middle layers down — bits moved, not added, so
+                # this stays size-matched to dense-flat. Monotonic edge>=near>=mid.
+                FFN_EDGE_GATE=Q5_K   ; FFN_NEAR_GATE=Q4_K   ; FFN_MID_GATE=IQ4_XS
+                FFN_EDGE_UP=Q6_K     ; FFN_NEAR_UP=Q5_K     ; FFN_MID_UP=Q4_K
+                FFN_EDGE_DOWN=Q6_K   ; FFN_NEAR_DOWN=Q5_K   ; FFN_MID_DOWN=Q5_K
+                ;;
+            dense-hybrid-quality)
+                FFN_EDGE_GATE=Q6_K   ; FFN_NEAR_GATE=Q5_K   ; FFN_MID_GATE=Q5_K
+                FFN_EDGE_UP=Q6_K     ; FFN_NEAR_UP=Q6_K     ; FFN_MID_UP=Q5_K
+                FFN_EDGE_DOWN=Q8_0   ; FFN_NEAR_DOWN=Q6_K   ; FFN_MID_DOWN=Q6_K
+                EMBD_TYPE="${EMBD_TYPE:-Q5_K}"
+                ;;
+        esac
+
+        if [ "$PROFILE" = "dense-hybrid" ] || [ "$PROFILE" = "dense-hybrid-quality" ]; then
+            # The structural lever: the 16 full-attention layers carry the global
+            # mixing but are only ~6% of params, so pinning them is cheap. The 48
+            # linear-attention layers are ~20%, so cutting them pays for it.
+            FULLATTN=Q8_0 ; FULLATTN_V=Q8_0
+            LINATTN=Q4_K  ; LINATTN_SMALL=Q4_K
+        fi
+        ;;
     custom)
         [ -z "$EDGE_EXP" ] && { echo "Error: --custom requires --edge-exp" >&2; exit 1; }
         [ -z "$MID_EXP" ] && MID_EXP="$EDGE_EXP"
@@ -140,9 +205,25 @@ case "$PROFILE" in
     *)
         echo "Error: unknown profile '$PROFILE'" >&2
         echo "Available: quality, i-quality, balanced, i-balanced, compact, i-compact, mini, nano, i-nano, micro, i-micro, custom" >&2
+        echo "Dense:     dense-flat, dense-grad, dense-hybrid, dense-hybrid-quality" >&2
         exit 1
         ;;
 esac
+
+case "$ARCH" in
+    moe|dense) ;;
+    *) echo "Error: --arch must be 'moe' or 'dense' (got '$ARCH')" >&2; exit 1 ;;
+esac
+
+# "dense" means two different things and they must not be confused: --dense-layers
+# is the count of LEADING dense FFN layers inside a MoE (LFM2, Step-3.x, Laguna),
+# whereas --arch dense means the whole model has no experts at all.
+if [ "$ARCH" = "dense" ] && [ "$DENSE_LAYERS" -ne 0 ]; then
+    echo "Error: --arch dense is incompatible with --dense-layers ($DENSE_LAYERS)." >&2
+    echo "       --dense-layers counts leading dense FFN layers inside a MoE model;" >&2
+    echo "       --arch dense means the model has no expert layers at all." >&2
+    exit 1
+fi
 
 # Generate config
 generate() {
@@ -207,9 +288,67 @@ generate() {
     done
 }
 
+# Dense / hybrid-attention emitter.
+#
+# Unlike the MoE path there are no expert tensors: the FFN is the dominant cost
+# (~63% on Qwen3.8-27B) and every weight is on the critical path for every token,
+# so the compression has to come from allocation rather than from sparsity.
+#
+# Linear-attention and full-attention layers are distinguished purely by tensor
+# name — attn_qkv/attn_gate/ssm_* exist only on linear layers, attn_q/k/v/output
+# only on full ones — so both sets are emitted for every layer and llama-quantize
+# ignores the lines that match nothing. (The MoE path already relies on this for
+# ssm_*/shortconv on architectures that have neither.)
+#
+# All names carry an explicit ".weight" suffix: entries are regex-searched, and
+# without it "ffn_gate" would also match "ffn_gate_inp".
+generate_dense() {
+    # Patterns are anchored. llama-quantize matches these with std::regex_search
+    # (llama-quant.cpp: unanchored, first match wins), so an unanchored
+    # "output.weight" would also capture every "blk.N.attn_output.weight" and
+    # silently mis-quantize all 16 attention output projections.
+    echo "^token_embd\\.weight$=${EMBD_TYPE}"
+    echo "^output\\.weight$=${OUTPUT_TYPE}"
+
+    for (( i=0; i<LAYERS; i++ )); do
+        if (( i <= EDGE_HI || i >= EDGE_LO )); then
+            gate="$FFN_EDGE_GATE" ; up="$FFN_EDGE_UP" ; down="$FFN_EDGE_DOWN"
+        elif (( i <= NEAR_HI || i >= NEAR_LO )); then
+            gate="$FFN_NEAR_GATE" ; up="$FFN_NEAR_UP" ; down="$FFN_NEAR_DOWN"
+        else
+            gate="$FFN_MID_GATE"  ; up="$FFN_MID_UP"  ; down="$FFN_MID_DOWN"
+        fi
+
+        echo "^blk\\.${i}\\.ffn_gate\\.weight$=${gate}"
+        echo "^blk\\.${i}\\.ffn_up\\.weight$=${up}"
+        echo "^blk\\.${i}\\.ffn_down\\.weight$=${down}"
+
+        # Full-attention layers (Qwen3.8: i%4==3). ~6% of params.
+        echo "^blk\\.${i}\\.attn_q\\.weight$=${FULLATTN}"
+        echo "^blk\\.${i}\\.attn_k\\.weight$=${FULLATTN}"
+        echo "^blk\\.${i}\\.attn_v\\.weight$=${FULLATTN_V}"
+        echo "^blk\\.${i}\\.attn_output\\.weight$=${FULLATTN}"
+
+        # Linear-attention layers. ~20% of params.
+        echo "^blk\\.${i}\\.attn_qkv\\.weight$=${LINATTN}"
+        echo "^blk\\.${i}\\.attn_gate\\.weight$=${LINATTN}"
+        echo "^blk\\.${i}\\.ssm_out\\.weight$=${LINATTN}"
+        echo "^blk\\.${i}\\.ssm_alpha\\.weight$=${LINATTN_SMALL}"
+        echo "^blk\\.${i}\\.ssm_beta\\.weight$=${LINATTN_SMALL}"
+    done
+}
+
+emit() {
+    if [ "$ARCH" = "dense" ]; then
+        generate_dense
+    else
+        generate
+    fi
+}
+
 if [ -n "$OUTPUT" ]; then
-    generate > "$OUTPUT"
-    echo "Config written to: $OUTPUT ($(wc -l < "$OUTPUT") lines, $LAYERS layers)" >&2
+    emit > "$OUTPUT"
+    echo "Config written to: $OUTPUT ($(wc -l < "$OUTPUT") lines, $LAYERS layers, arch=$ARCH)" >&2
 else
-    generate
+    emit
 fi
